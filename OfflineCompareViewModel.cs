@@ -1,18 +1,17 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
-using System.Linq;
 using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
 {
     /// <summary>
     /// OfflineCompareViewModel - Handles offline file comparison with loop tracking
-    /// Supports both single file mode and multiple file mode (MAIN/REDUNDANT separate)
+    /// Compatible with .NET 4.0 (VS2010)
     /// </summary>
-    public class OfflineCompareViewModel : ViewModelBase
+    public class OfflineCompareViewModel : INotifyPropertyChanged
     {
         // =============================================
         // FRAME STRUCTURE CONSTANTS
@@ -39,54 +38,75 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
         private bool _isProcessing = false;
 
         // =============================================
+        // PROPERTY CHANGED EVENT
+        // =============================================
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        protected void OnPropertyChanged(string propertyName)
+        {
+            PropertyChangedEventHandler handler = PropertyChanged;
+            if (handler != null)
+                handler(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        protected void SetProperty<T>(ref T field, T value, string propertyName)
+        {
+            if (!Equals(field, value))
+            {
+                field = value;
+                OnPropertyChanged(propertyName);
+            }
+        }
+
+        // =============================================
         // PROPERTIES
         // =============================================
         public string ExpectedFilePath
         {
             get { return _expectedFilePath; }
-            set { SetProperty(ref _expectedFilePath, value); }
+            set { SetProperty(ref _expectedFilePath, value, "ExpectedFilePath"); }
         }
 
         public string SingleFilePath
         {
             get { return _singleFilePath; }
-            set { SetProperty(ref _singleFilePath, value); }
+            set { SetProperty(ref _singleFilePath, value, "SingleFilePath"); }
         }
 
         public string MainFilePath
         {
             get { return _mainFilePath; }
-            set { SetProperty(ref _mainFilePath, value); }
+            set { SetProperty(ref _mainFilePath, value, "MainFilePath"); }
         }
 
         public string RedundantFilePath
         {
             get { return _redundantFilePath; }
-            set { SetProperty(ref _redundantFilePath, value); }
+            set { SetProperty(ref _redundantFilePath, value, "RedundantFilePath"); }
         }
 
         public string ComparisonResult
         {
             get { return _comparisonResult; }
-            set { SetProperty(ref _comparisonResult, value); }
+            set { SetProperty(ref _comparisonResult, value, "ComparisonResult"); }
         }
 
         public string StatusMessage
         {
             get { return _statusMessage; }
-            set { SetProperty(ref _statusMessage, value); }
+            set { SetProperty(ref _statusMessage, value, "StatusMessage"); }
         }
 
         public bool IsMultipleFileMode
         {
             get { return _isMultipleFileMode; }
-            set { SetProperty(ref _isMultipleFileMode, value); }
+            set { SetProperty(ref _isMultipleFileMode, value, "IsMultipleFileMode"); }
         }
 
         public bool IsProcessing
         {
             get { return _isProcessing; }
-            set { SetProperty(ref _isProcessing, value); }
+            set { SetProperty(ref _isProcessing, value, "IsProcessing"); }
         }
 
         // =============================================
@@ -121,6 +141,15 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
             public byte[] Command8 { get; set; }
             public string Source { get; set; }
             public string HexString { get; set; }
+        }
+
+        private class ComparisonResult
+        {
+            public int PassCount { get; set; }
+            public int FailCount { get; set; }
+            public int TotalLoops { get; set; }
+            public int TotalTookFromRed { get; set; }
+            public double SuccessRate { get; set; }
         }
 
         // =============================================
@@ -167,8 +196,10 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
             StatusMessage = "Processing...";
             ComparisonResult = "";
 
-            // Run on background thread
-            Task.Run(() => PerformComparison());
+            // Run on background thread (.NET 4.0 compatible)
+            Thread workerThread = new Thread(PerformComparison);
+            workerThread.IsBackground = true;
+            workerThread.Start();
         }
 
         // =============================================
@@ -182,7 +213,7 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
 
                 // Load expected commands
                 StatusMessage = "Loading expected commands...";
-                var expectedCommands = LoadExpectedCommands(_expectedFilePath);
+                List<ExpectedCommand> expectedCommands = LoadExpectedCommands(_expectedFilePath);
 
                 if (expectedCommands.Count == 0)
                 {
@@ -217,15 +248,15 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
 
                 // Perform comparison
                 StatusMessage = "Comparing loops...";
-                var result = CompareLoopsWithExpected(expectedCommands, mainLoops, redundantLoops);
+                ComparisonResult result = CompareLoopsWithExpected(expectedCommands, mainLoops, redundantLoops);
 
                 // Generate report
                 TimeSpan elapsed = DateTime.Now - startTime;
                 GenerateReport(result, expectedCommands, mainLoops, redundantLoops, elapsed.TotalSeconds);
 
                 StatusMessage = string.Format("Complete: {0}/{1} loops PASS | {2:F1}s",
-                    CalculatePassCount(expectedCommands, mainLoops, redundantLoops),
-                    Math.Max(mainLoops.Count, redundantLoops.Count),
+                    result.PassCount,
+                    result.TotalLoops,
                     elapsed.TotalSeconds);
             }
             catch (Exception ex)
@@ -241,7 +272,7 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
 
         private List<ExpectedCommand> LoadExpectedCommands(string filePath)
         {
-            var commands = new List<ExpectedCommand>();
+            List<ExpectedCommand> commands = new List<ExpectedCommand>();
             try
             {
                 string[] lines = File.ReadAllLines(filePath);
@@ -255,7 +286,15 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
                     byte[] bytes = ParseExpectedCommandLine(trimmed);
                     if (bytes != null && bytes.Length == 8)
                     {
-                        bool duplicate = commands.Any(c => CompareByteArrays(c.CommandBytes, bytes));
+                        bool duplicate = false;
+                        foreach (ExpectedCommand cmd in commands)
+                        {
+                            if (CompareByteArrays(cmd.CommandBytes, bytes))
+                            {
+                                duplicate = true;
+                                break;
+                            }
+                        }
                         if (!duplicate)
                             commands.Add(new ExpectedCommand(bytes));
                     }
@@ -427,7 +466,7 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
         private List<List<LogCommand>> ExtractLoopsFromFile(string filePath, string expectedSource,
             byte[] firstCmd, byte[] lastCmd)
         {
-            var allLoops = new List<List<LogCommand>>();
+            List<List<LogCommand>> allLoops = new List<List<LogCommand>>();
             bool firstEqualsLast = CompareByteArrays(firstCmd, lastCmd);
             List<LogCommand> currentLoop = null;
             bool loopStarted = false;
@@ -499,81 +538,70 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
             return allLoops;
         }
 
-        private dynamic CompareLoopsWithExpected(List<ExpectedCommand> expectedCommands,
+        private ComparisonResult CompareLoopsWithExpected(List<ExpectedCommand> expectedCommands,
             List<List<LogCommand>> mainLoops, List<List<LogCommand>> redundantLoops)
         {
-            int passCount = 0;
-            int failCount = 0;
-            int totalTookFromRed = 0;
+            ComparisonResult result = new ComparisonResult();
             int totalLoops = Math.Max(mainLoops.Count, redundantLoops.Count);
+            result.TotalLoops = totalLoops;
 
             for (int loopIdx = 0; loopIdx < totalLoops; loopIdx++)
             {
-                var mainLoop = loopIdx < mainLoops.Count ? mainLoops[loopIdx] : null;
-                var redLoop = loopIdx < redundantLoops.Count ? redundantLoops[loopIdx] : null;
+                List<LogCommand> mainLoop = loopIdx < mainLoops.Count ? mainLoops[loopIdx] : null;
+                List<LogCommand> redLoop = loopIdx < redundantLoops.Count ? redundantLoops[loopIdx] : null;
 
                 int trulyMissing = 0;
-                foreach (var expected in expectedCommands)
+                foreach (ExpectedCommand expected in expectedCommands)
                 {
-                    bool inMain = mainLoop?.Any(cmd => CompareByteArrays(expected.CommandBytes, cmd.Command8)) ?? false;
+                    bool inMain = false;
+                    if (mainLoop != null)
+                    {
+                        foreach (LogCommand cmd in mainLoop)
+                        {
+                            if (CompareByteArrays(expected.CommandBytes, cmd.Command8))
+                            {
+                                inMain = true;
+                                break;
+                            }
+                        }
+                    }
+
                     if (!inMain)
                     {
-                        bool inRed = redLoop?.Any(cmd => CompareByteArrays(expected.CommandBytes, cmd.Command8)) ?? false;
+                        bool inRed = false;
+                        if (redLoop != null)
+                        {
+                            foreach (LogCommand cmd in redLoop)
+                            {
+                                if (CompareByteArrays(expected.CommandBytes, cmd.Command8))
+                                {
+                                    inRed = true;
+                                    break;
+                                }
+                            }
+                        }
+
                         if (inRed)
-                            totalTookFromRed++;
+                            result.TotalTookFromRed++;
                         else
                             trulyMissing++;
                     }
                 }
 
-                if (trulyMissing == 0) passCount++;
-                else failCount++;
+                if (trulyMissing == 0)
+                    result.PassCount++;
+                else
+                    result.FailCount++;
             }
 
-            return new
-            {
-                PassCount = passCount,
-                FailCount = failCount,
-                TotalLoops = totalLoops,
-                TotalTookFromRed = totalTookFromRed,
-                SuccessRate = totalLoops > 0 ? (passCount * 100.0 / totalLoops) : 0.0
-            };
+            result.SuccessRate = result.TotalLoops > 0 ? (result.PassCount * 100.0 / result.TotalLoops) : 0.0;
+            return result;
         }
 
-        private int CalculatePassCount(List<ExpectedCommand> expectedCommands,
-            List<List<LogCommand>> mainLoops, List<List<LogCommand>> redundantLoops)
-        {
-            int passCount = 0;
-            int totalLoops = Math.Max(mainLoops.Count, redundantLoops.Count);
-
-            for (int loopIdx = 0; loopIdx < totalLoops; loopIdx++)
-            {
-                var mainLoop = loopIdx < mainLoops.Count ? mainLoops[loopIdx] : null;
-                var redLoop = loopIdx < redundantLoops.Count ? redundantLoops[loopIdx] : null;
-
-                bool loopPass = true;
-                foreach (var expected in expectedCommands)
-                {
-                    bool inMain = mainLoop?.Any(cmd => CompareByteArrays(expected.CommandBytes, cmd.Command8)) ?? false;
-                    bool inRed = redLoop?.Any(cmd => CompareByteArrays(expected.CommandBytes, cmd.Command8)) ?? false;
-
-                    if (!inMain && !inRed)
-                    {
-                        loopPass = false;
-                        break;
-                    }
-                }
-
-                if (loopPass) passCount++;
-            }
-
-            return passCount;
-        }
-
-        private void GenerateReport(dynamic result, List<ExpectedCommand> expectedCommands,
+        private void GenerateReport(ComparisonResult result, List<ExpectedCommand> expectedCommands,
             List<List<LogCommand>> mainLoops, List<List<LogCommand>> redundantLoops, double elapsedSeconds)
         {
-            var report = new StringBuilder();
+            StringBuilder report = new StringBuilder();
             string sepLine = new string('=', 80);
 
             report.AppendLine(sepLine);
@@ -628,12 +656,21 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
         {
             if (arr1 == null || arr2 == null) return false;
             if (arr1.Length != arr2.Length) return false;
-            return arr1.SequenceEqual(arr2);
+            for (int i = 0; i < arr1.Length; i++)
+            {
+                if (arr1[i] != arr2[i]) return false;
+            }
+            return true;
         }
 
         private bool ContainsCommand(List<LogCommand> loop, byte[] command8)
         {
-            return loop.Any(cmd => CompareByteArrays(cmd.Command8, command8));
+            foreach (LogCommand cmd in loop)
+            {
+                if (CompareByteArrays(cmd.Command8, command8))
+                    return true;
+            }
+            return false;
         }
 
         private bool IsHeaderLine(string line)
@@ -689,7 +726,12 @@ namespace ANVESHA_TCRX_HEALTH_STATUS_GUI_V2.ViewModels
 
         private bool IsAllZeros(byte[] bytes)
         {
-            return bytes != null && bytes.All(b => b == 0x00);
+            if (bytes == null) return true;
+            foreach (byte b in bytes)
+            {
+                if (b != 0x00) return false;
+            }
+            return true;
         }
     }
 }
